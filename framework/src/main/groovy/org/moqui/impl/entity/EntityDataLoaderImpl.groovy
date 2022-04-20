@@ -71,6 +71,7 @@ class EntityDataLoaderImpl implements EntityDataLoader {
     boolean disableAuditLog = false
     boolean disableFkCreate = false
     boolean disableDataFeed = false
+    boolean continueOnError = false
 
     char csvDelimiter = ','
     char csvCommentStart = '#'
@@ -106,6 +107,8 @@ class EntityDataLoaderImpl implements EntityDataLoader {
     @Override EntityDataLoader onlyCreate(boolean onlyCreate) { this.onlyCreate = onlyCreate; return this }
     @Override EntityDataLoader dummyFks(boolean dummyFks) { this.dummyFks = dummyFks; return this }
     @Override EntityDataLoader messageNoActionFiles(boolean message) { this.messageNoActionFiles = message; return this }
+
+    @Override EntityDataLoader continueOnError(boolean continueOnError) { this.continueOnError = continueOnError; return this }
 
     @Override EntityDataLoader disableEntityEca(boolean disable) { disableEeca = disable; return this }
     @Override EntityDataLoader disableAuditLog(boolean disable) { disableAuditLog = disable; return this }
@@ -295,7 +298,7 @@ class EntityDataLoaderImpl implements EntityDataLoader {
             if (this.csvText) {
                 InputStream csvInputStream = new ByteArrayInputStream(csvText.getBytes("UTF-8"))
                 try {
-                    tf.runUseOrBegin(transactionTimeout, "Error loading CSV entity data", { ech.loadFile("csvText", csvInputStream) })
+                    tf.runUseOrBegin(transactionTimeout, "Error loading CSV entity data", { ech.loadFile("csvText", csvInputStream, continueOnError) })
                 } finally {
                     if (csvInputStream != null) csvInputStream.close()
                 }
@@ -356,7 +359,7 @@ class EntityDataLoaderImpl implements EntityDataLoader {
                     logger.info("Loaded ${recordsLoaded} records from ${location} in ${((System.currentTimeMillis() - beforeTime)/1000)}s")
                 } else if (location.endsWith(".csv")) {
                     long beforeRecords = ech.valuesRead ?: 0
-                    if (ech.loadFile(location, inputStream)) {
+                    if (ech.loadFile(location, inputStream, continueOnError)) {
                         recordsLoaded = (ech.valuesRead?:0) - beforeRecords
                         logger.info("Loaded ${recordsLoaded} records from ${location} in ${((System.currentTimeMillis() - beforeTime)/1000)}s")
                     }
@@ -385,7 +388,7 @@ class EntityDataLoaderImpl implements EntityDataLoader {
                                 logger.info("Loaded ${curFileLoaded} records from ${entryFile} in zip file ${location} in ${((System.currentTimeMillis() - entryBeforeTime)/1000)}s")
                             } else if (entryFile.endsWith(".csv")) {
                                 long beforeRecords = ech.valuesRead ?: 0
-                                if (ech.loadFile(entryFile, zis)) {
+                                if (ech.loadFile(entryFile, zis, continueOnError)) {
                                     long curFileLoaded = (ech.valuesRead?:0) - beforeRecords
                                     recordsLoaded += curFileLoaded
                                     logger.info("Loaded ${curFileLoaded} records from ${entryFile} in zip file ${location} in ${((System.currentTimeMillis() - entryBeforeTime)/1000)}s")
@@ -916,7 +919,8 @@ class EntityDataLoaderImpl implements EntityDataLoader {
         long getValuesRead() { return valuesRead }
         List<String> getMessageList() { return messageList }
 
-        boolean loadFile(String location, InputStream is) {
+        boolean loadFile(String location, InputStream is, boolean continueOnError) {
+            logger.warn("loadFile continueOnError: ${continueOnError}")
             BufferedReader reader = new BufferedReader(new InputStreamReader(is, "UTF-8"))
 
             CSVParser parser = CSVFormat.newFormat(edli.csvDelimiter)
@@ -970,56 +974,73 @@ class EntityDataLoaderImpl implements EntityDataLoader {
 
             // logger.warn("======== CSV entity/service [${entityName}] headerMap: ${headerMap}")
             EntityDefinition entityDefinition = isService ? null : edli.efi.getEntityDefinition(entityName)
-            while (iterator.hasNext()) {
-                CSVRecord record = iterator.next()
-                // logger.warn("======== CSV record: ${record.toString()}")
-                if (isService) {
-                    ServiceCallSyncImpl currentScs = (ServiceCallSyncImpl) edli.sfi.sync().name(entityName)
-                    if (edli.defaultValues) currentScs.parameters(edli.defaultValues)
-                    for (Map.Entry<String, Integer> header in headerMap) {
-                        // if not enough elements in the record for the index, skip it
-                        if (header.value >= record.size()) continue
-                        currentScs.parameter(header.key, record.get(header.value))
-                    }
-                    valueHandler.handleService(currentScs, location)
-                    valuesRead++
-                } else {
-                    EntityValueImpl currentEntityValue = (EntityValueImpl) edli.efi.makeValue(entityName)
-                    if (edli.defaultValues) currentEntityValue.setFields(edli.defaultValues, true, null, null)
-                    for (Map.Entry<String, Integer> header in headerMap) {
-                        String fieldStr = record.get(header.value)
-                        if (fieldStr == null) continue
-                        if (fieldStr.isEmpty()) {
-                            currentEntityValue.set(header.key, null)
-                            continue
+            
+            boolean hasNext = true
+            while (hasNext) {
+                try {
+                    CSVRecord record = iterator.next()
+                    hasNext = iterator.hasNext()
+                    // logger.warn("======== CSV record: ${record.toString()}")
+                    if (isService) {
+                        ServiceCallSyncImpl currentScs = (ServiceCallSyncImpl) edli.sfi.sync().name(entityName)
+                        if (edli.defaultValues) currentScs.parameters(edli.defaultValues)
+                        for (Map.Entry<String, Integer> header in headerMap) {
+                            // if not enough elements in the record for the index, skip it
+                            if (header.value >= record.size()) continue
+                            currentScs.parameter(header.key, record.get(header.value))
+                        }
+                        valueHandler.handleService(currentScs, location)
+                        valuesRead++
+                    } else {
+                        EntityValueImpl currentEntityValue = (EntityValueImpl) edli.efi.makeValue(entityName)
+                        if (edli.defaultValues) currentEntityValue.setFields(edli.defaultValues, true, null, null)
+                        for (Map.Entry<String, Integer> header in headerMap) {
+                            String fieldStr = record.get(header.value)
+                            if (fieldStr == null) continue
+                            if (fieldStr.isEmpty()) {
+                                currentEntityValue.set(header.key, null)
+                                continue
+                            }
+
+                            // for BLOB field type do Base64 decode
+                            if (entityDefinition != null && fieldStr != null) {
+                                FieldInfo fi = entityDefinition.fieldInfoMap.get(header.key)
+                                if (fi.typeValue == 12) {
+                                    byte[] bytes = Base64.getDecoder().decode(fieldStr)
+                                    logger.warn("Load ${bytes.length} bytes: ${fieldStr}")
+                                    currentEntityValue.setBytes(header.key, bytes)
+                                    continue
+                                }
+                            }
+
+                            // handle generally with setString()
+                            currentEntityValue.setString(header.key, fieldStr)
                         }
 
-                        // for BLOB field type do Base64 decode
-                        if (entityDefinition != null && fieldStr != null) {
-                            FieldInfo fi = entityDefinition.fieldInfoMap.get(header.key)
-                            if (fi.typeValue == 12) {
-                                byte[] bytes = Base64.getDecoder().decode(fieldStr)
-                                logger.warn("Load ${bytes.length} bytes: ${fieldStr}")
-                                currentEntityValue.setBytes(header.key, bytes)
-                                continue
+                        if (!currentEntityValue.containsPrimaryKey()) {
+                            if (currentEntityValue.getEntityDefinition().getPkFieldNames().size() == 1) {
+                                currentEntityValue.setSequencedIdPrimary()
+                            } else {
+                                throw new BaseException("Cannot process value with incomplete primary key for [${currentEntityValue.getEntityName()}] with more than 1 primary key field: " + currentEntityValue)
                             }
                         }
 
-                        // handle generally with setString()
-                        currentEntityValue.setString(header.key, fieldStr)
+                        // logger.warn("======== CSV entity: ${currentEntityValue.toString()}")
+                        valueHandler.handleValue(currentEntityValue, location)
+                        valuesRead++
                     }
+                } catch (Throwable t) {
+                    if (continueOnError) {
+                        logger.warn("Error parsing line ${valuesRead} ${t.toString()}")
+                        valuesRead++
+                        Thread.sleep(2000)
 
-                    if (!currentEntityValue.containsPrimaryKey()) {
-                        if (currentEntityValue.getEntityDefinition().getPkFieldNames().size() == 1) {
-                            currentEntityValue.setSequencedIdPrimary()
-                        } else {
-                            throw new BaseException("Cannot process value with incomplete primary key for [${currentEntityValue.getEntityName()}] with more than 1 primary key field: " + currentEntityValue)
+                        if (t.toString().contains("Transaction marked for rollback")) {
+                            hasNext = false; // transaction issues, abort
                         }
+                    } else {
+                      throw t;
                     }
-
-                    // logger.warn("======== CSV entity: ${currentEntityValue.toString()}")
-                    valueHandler.handleValue(currentEntityValue, location)
-                    valuesRead++
                 }
             }
             return true
