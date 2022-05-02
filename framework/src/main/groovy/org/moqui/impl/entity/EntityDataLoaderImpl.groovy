@@ -923,6 +923,8 @@ class EntityDataLoaderImpl implements EntityDataLoader {
             logger.warn("loadFile continueOnError: ${continueOnError}")
             BufferedReader reader = new BufferedReader(new InputStreamReader(is, "UTF-8"))
 
+            this.edli.disableDataFeed(true);
+
             CSVParser parser = CSVFormat.newFormat(edli.csvDelimiter)
                     .withCommentMarker(edli.csvCommentStart)
                     .withQuote(edli.csvQuoteChar)
@@ -1033,7 +1035,7 @@ class EntityDataLoaderImpl implements EntityDataLoader {
                     if (continueOnError) {
                         logger.warn("Error parsing line ${valuesRead} ${t.toString()}")
                         valuesRead++
-                        Thread.sleep(2000)
+                        //Thread.sleep(2000)
 
                         if (t.toString().contains("Transaction marked for rollback")) {
                             hasNext = false; // transaction issues, abort
