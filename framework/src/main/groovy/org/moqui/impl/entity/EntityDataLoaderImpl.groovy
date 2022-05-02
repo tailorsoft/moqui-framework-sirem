@@ -1035,7 +1035,7 @@ class EntityDataLoaderImpl implements EntityDataLoader {
                     if (continueOnError) {
                         logger.warn("Error parsing line ${valuesRead} ${t.toString()}")
                         valuesRead++
-                        //Thread.sleep(2000)
+                        Thread.sleep(2000)
 
                         if (t.toString().contains("Transaction marked for rollback")) {
                             hasNext = false; // transaction issues, abort
