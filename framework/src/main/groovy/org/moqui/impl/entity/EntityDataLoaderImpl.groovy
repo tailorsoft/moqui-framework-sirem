@@ -72,6 +72,7 @@ class EntityDataLoaderImpl implements EntityDataLoader {
     boolean disableFkCreate = false
     boolean disableDataFeed = false
     boolean continueOnError = false
+    int skipLines = 0;
 
     char csvDelimiter = ','
     char csvCommentStart = '#'
@@ -109,6 +110,7 @@ class EntityDataLoaderImpl implements EntityDataLoader {
     @Override EntityDataLoader messageNoActionFiles(boolean message) { this.messageNoActionFiles = message; return this }
 
     @Override EntityDataLoader continueOnError(boolean continueOnError) { this.continueOnError = continueOnError; return this }
+    @Override EntityDataLoader skipLines(int skipLines) { this.skipLines = skipLines; return this }
 
     @Override EntityDataLoader disableEntityEca(boolean disable) { disableEeca = disable; return this }
     @Override EntityDataLoader disableAuditLog(boolean disable) { disableAuditLog = disable; return this }
@@ -298,7 +300,7 @@ class EntityDataLoaderImpl implements EntityDataLoader {
             if (this.csvText) {
                 InputStream csvInputStream = new ByteArrayInputStream(csvText.getBytes("UTF-8"))
                 try {
-                    tf.runUseOrBegin(transactionTimeout, "Error loading CSV entity data", { ech.loadFile("csvText", csvInputStream, continueOnError) })
+                    tf.runUseOrBegin(transactionTimeout, "Error loading CSV entity data", { ech.loadFile("csvText", csvInputStream, continueOnError, skipLines) })
                 } finally {
                     if (csvInputStream != null) csvInputStream.close()
                 }
@@ -359,7 +361,7 @@ class EntityDataLoaderImpl implements EntityDataLoader {
                     logger.info("Loaded ${recordsLoaded} records from ${location} in ${((System.currentTimeMillis() - beforeTime)/1000)}s")
                 } else if (location.endsWith(".csv")) {
                     long beforeRecords = ech.valuesRead ?: 0
-                    if (ech.loadFile(location, inputStream, continueOnError)) {
+                    if (ech.loadFile(location, inputStream, continueOnError, skipLines)) {
                         recordsLoaded = (ech.valuesRead?:0) - beforeRecords
                         logger.info("Loaded ${recordsLoaded} records from ${location} in ${((System.currentTimeMillis() - beforeTime)/1000)}s")
                     }
@@ -388,7 +390,7 @@ class EntityDataLoaderImpl implements EntityDataLoader {
                                 logger.info("Loaded ${curFileLoaded} records from ${entryFile} in zip file ${location} in ${((System.currentTimeMillis() - entryBeforeTime)/1000)}s")
                             } else if (entryFile.endsWith(".csv")) {
                                 long beforeRecords = ech.valuesRead ?: 0
-                                if (ech.loadFile(entryFile, zis, continueOnError)) {
+                                if (ech.loadFile(entryFile, zis, continueOnError, skipLines)) {
                                     long curFileLoaded = (ech.valuesRead?:0) - beforeRecords
                                     recordsLoaded += curFileLoaded
                                     logger.info("Loaded ${curFileLoaded} records from ${entryFile} in zip file ${location} in ${((System.currentTimeMillis() - entryBeforeTime)/1000)}s")
@@ -919,8 +921,8 @@ class EntityDataLoaderImpl implements EntityDataLoader {
         long getValuesRead() { return valuesRead }
         List<String> getMessageList() { return messageList }
 
-        boolean loadFile(String location, InputStream is, boolean continueOnError) {
-            logger.warn("loadFile continueOnError: ${continueOnError}")
+        boolean loadFile(String location, InputStream is, boolean continueOnError, int skipLines) {
+            logger.warn("loadFile continueOnError: ${continueOnError} skipLines: ${skipLines}")
             BufferedReader reader = new BufferedReader(new InputStreamReader(is, "UTF-8"))
 
             this.edli.disableDataFeed(true);
@@ -976,6 +978,16 @@ class EntityDataLoaderImpl implements EntityDataLoader {
 
             // logger.warn("======== CSV entity/service [${entityName}] headerMap: ${headerMap}")
             EntityDefinition entityDefinition = isService ? null : edli.efi.getEntityDefinition(entityName)
+
+            if (skipLines > 0)
+            {
+              while (skipLines > 0) {
+                try {
+                  iterator.next();
+                  skipLines --;
+                } catch (Throwable t) {}
+              }
+            }
             
             boolean hasNext = true
             while (hasNext) {
@@ -1035,7 +1047,7 @@ class EntityDataLoaderImpl implements EntityDataLoader {
                     if (continueOnError) {
                         logger.warn("Error parsing line ${valuesRead} ${t.toString()}")
                         valuesRead++
-                        Thread.sleep(2000)
+                        Thread.sleep(500)
 
                         if (t.toString().contains("Transaction marked for rollback")) {
                             hasNext = false; // transaction issues, abort

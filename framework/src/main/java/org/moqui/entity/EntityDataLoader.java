@@ -86,6 +86,7 @@ public interface EntityDataLoader {
 
 
     EntityDataLoader continueOnError(boolean continueOnError);
+    EntityDataLoader skipLines(int skipLines);
 
     /** Set to true to disable Entity Facade ECA rules (for this import only, does not affect other things happening
      * in the system).
